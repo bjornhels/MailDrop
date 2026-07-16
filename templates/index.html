@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="en">
+
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta name="referrer" content="no-referrer">
+        <title>{% if brand %}{{ brand }} | {% endif %}MailDrop</title>
+
+        <link rel="icon" href="{{ url_for('static', filename='img/logo-maildrop.png') }}" type="image/png">
+
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-9ndCyUaIbzAi2FUVXJi0CjmCapSmO7SnpJef0486qhLnuZ2cdeRhO02iuK6FUUVM" crossorigin="anonymous">
+
+        <link rel="preconnect" href="https://fonts.googleapis.com">
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+        {% if mapbox_token and geolocations %}
+        <script src="https://api.mapbox.com/mapbox-gl-js/v3.26.0/mapbox-gl.js"></script>
+        <link href="https://api.mapbox.com/mapbox-gl-js/v3.26.0/mapbox-gl.css" rel="stylesheet" />
+        {% endif %}
+
+        <style>
+            body {
+                font-family: 'Plus Jakarta Sans', sans-serif;
+            }
+
+            .map-pin {
+                width: 34px;
+                height: 44px;
+                cursor: pointer;
+            }
+
+            .map-pin svg {
+                display: block;
+                filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.35));
+            }
+
+            .map-pin-number {
+                position: absolute;
+                top: -7px;
+                right: -9px;
+                min-width: 20px;
+                height: 20px;
+                padding: 0 4px;
+                background: #ffffff;
+                border: 2px solid #1767CE;
+                border-radius: 10px;
+                color: #1767CE;
+                font-size: 12px;
+                font-weight: 700;
+                line-height: 16px;
+                text-align: center;
+            }
+
+            .mapboxgl-popup-content {
+                font-family: 'Plus Jakarta Sans', sans-serif;
+            }
+
+            .header-value {
+                white-space: pre-line;
+                word-break: break-word;
+            }
+        </style>
+
+    </head>
+
+    <body>
+
+        <nav class="navbar navbar-expand-lg navbar-dark" style="background-color: #1767CE;">
+            <div class="container-fluid" style="color: white;">
+                <a class="navbar-brand p-2" href="/">{% if brand %}{{ brand }} | {% endif %}MailDrop</a>
+            </div>
+        </nav>
+
+        <div class="container my-4 text-dark">
+            <div class="row">
+                <div class="col-12 text-center p-4">
+                    <h3>Analyze emails for signs of phishing or malware in attachments</h3>
+                    <p>Upload an .eml or .msg file to analyze the email. <a href="" class="text-info" data-bs-toggle="modal" data-bs-target="#infoModal">What is .EML?</a></p>
+
+                    <form action="/upload" method="post" enctype="multipart/form-data" id="upload-form">
+                        <div class="mb-2 text-center">
+                            <input type="file" class="form-control" id="file-input" name="file" accept=".eml,.msg">
+                        </div>
+                        <button type="submit" class="btn btn-primary" id="upload-button">Analyze email</button>
+                    </form>
+                    <div id="loading" class="d-none">
+                        <button class="btn btn-info m-5" type="button" disabled>
+                          <span class="spinner-grow spinner-grow-sm" role="status" aria-hidden="true"></span>
+                          Analyzing email...
+                        </button>
+                    </div>
+                    <div id="upload-error" class="alert alert-warning mt-4 d-none">
+                        <strong>Error</strong>
+                        <p>Something went wrong while uploading the file. Please try again.</p>
+                        <span class="text-secondary">If the problem persists, please contact support.</span>
+                    </div>
+
+                    <div class="modal fade" id="infoModal" tabindex="-1" aria-labelledby="infoModalLabel" aria-hidden="true">
+                      <div class="modal-dialog modal-lg">
+                        <div class="modal-content">
+                          <div class="modal-header">
+                            <h1 class="modal-title fs-5" id="infoModalLabel">What is .EML?</h1>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                          </div>
+                          <div class="modal-body">
+                            .EML is a file type that allows this website to read information about your email. Such as where the email was sent from, where it has been, what type of attachments have been sent, etc. You can download a .EML file from Outlook by dragging the email from your inbox and onto your desktop. Then upload the .EML file to this website to analyze it. Outlook may also save the email as a .MSG file, which is supported too.
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {% if error %}
+                    <div class="alert alert-warning mt-4">
+                        <strong>Error</strong>
+                        <p>{{ error }}</p>
+                        <span class="text-secondary">If the problem persists, please contact support.</span>
+                    </div>
+                    {% endif %}
+
+                    {% if analyzed %}
+                    <div class="container mt-4 mb-4 text-start">
+                        <h3 class="mt-5">Email analysis</h3>
+
+                        {% if is_spoofed %}
+                        <div class="bg-warning p-3 mt-3 mb-3 rounded">
+                            <p class="fw-bold mb-2">PHISHING WARNING: This email shows signs of a phishing attempt. Treat it with caution.</p>
+                            <p class="mb-2">It was flagged for the following reasons:</p>
+                            <ul class="mb-0">
+                                {% for item in phishing_evidence %}
+                                <li class="mb-2">
+                                    <strong>{{ item.title }}</strong><br>
+                                    <span class="font-monospace small">Observed: {{ item.observed }}</span><br>
+                                    {{ item.explanation }}
+                                </li>
+                                {% endfor %}
+                            </ul>
+                            {% if phishing_caveats %}
+                            <div class="bg-light text-dark p-3 mt-3 rounded">
+                                {% for caveat in phishing_caveats %}
+                                <p class="{{ 'mb-0' if loop.last else 'mb-2' }}"><strong>{{ caveat.title }}</strong> {{ caveat.explanation }}</p>
+                                {% endfor %}
+                            </div>
+                            {% endif %}
+                        </div>
+                        {% endif %}
+
+                        {% if is_infected %}
+                        <div class="bg-danger text-white p-3 mt-3 mb-3 rounded">
+                            <p class="fw-bold mb-2">INFECTED FILE: We have found signs of malware in one or more of the attachments. Do not open the attachments.</p>
+                            <p class="mb-2">It was flagged for the following reasons:</p>
+                            <ul class="mb-2">
+                                {% for result in results if result.status == 'malicious' %}
+                                <li class="mb-2">
+                                    The attachment <strong>{{ result.name }}</strong> was identified as malware by {{ result.malicious_count }}{% if result.total_engines %} of {{ result.total_engines }}{% endif %} independent security engines on VirusTotal{% if result.yara_rule %}, matching the known malware signature <strong>{{ result.yara_rule }}</strong>{% endif %}{% if result.first_seen %}. This malware has been known since {{ result.first_seen }}{% endif %}.
+                                </li>
+                                {% endfor %}
+                            </ul>
+                            <p class="mb-0">When several independent antivirus engines agree that a file is malicious, a false alarm is unlikely.</p>
+                        </div>
+                        {% endif %}
+
+                        <hr>
+
+                        {% if headers %}
+                        <div>
+                            <h4>General Information</h4>
+                            <table class="table" style="table-layout: fixed; word-wrap: break-word;">
+                              <tbody>
+                                {% for key, value in headers.items() %}
+                                <tr>
+                                  <td style="width: 30%;">{{ key }}</td>
+                                  <td class="header-value">{% if value %}{{ value }}{% else %}Not available{% endif %}</td>
+                                </tr>
+                                {% endfor %}
+                              </tbody>
+                            </table>
+                        </div>
+                        {% endif %}
+
+                        {% if hops %}
+                        <div class="accordion accordion-flush" id="hopsAccordion">
+                          <div class="accordion-item">
+                            <h2 class="accordion-header">
+                              <button class="accordion-button collapsed bg-info text-white" type="button" data-bs-toggle="collapse" data-bs-target="#hops-collapse" aria-expanded="false" aria-controls="hops-collapse">
+                                Advanced information
+                              </button>
+                            </h2>
+                            <div id="hops-collapse" class="accordion-collapse collapse" data-bs-parent="#hopsAccordion">
+                              <div class="accordion-body">
+                                  <div class="container">
+                                    <h4>Hops</h4>
+                                    <table class="table table-hover table-responsive-sm" style="table-layout: fixed; word-wrap: break-word;">
+                                      <thead class="table-dark">
+                                        <tr>
+                                            <th>Hop</th>
+                                            <th>Submitting Host</th>
+                                            <th>Receiving Host</th>
+                                            <th>Time</th>
+                                            <th>Delay</th>
+                                            <th>Type</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {% for hop in hops %}
+                                        <tr>
+                                          <td>{{ hop.index }}</td>
+                                          <td>{{ hop.submitting_host or 'Not available' }}</td>
+                                          <td>{{ hop.receiving_host or 'Not available' }}</td>
+                                          <td>{{ hop.time or 'Not available' }}</td>
+                                          {% if hop.delay is not none %}
+                                          <td {% if hop.delay > 0 %}style="color: #f1c40f;"{% endif %}>{{ hop.delay }}s</td>
+                                          {% else %}
+                                          <td>Not available</td>
+                                          {% endif %}
+                                          <td>{{ hop.type or 'Not available' }}</td>
+                                        </tr>
+                                        {% endfor %}
+                                      </tbody>
+                                    </table>
+
+                                    {% if received_headers %}
+                                    <h4 class="mt-4">Raw Received headers</h4>
+                                    <p class="text-secondary small">One row per server that handled the email, in the order it travelled (1 = origin). The hop numbers match the table above.</p>
+                                    <table class="table table-sm table-bordered">
+                                      <tbody>
+                                        {% for raw in received_headers %}
+                                        <tr>
+                                          <td class="text-center fw-bold" style="width: 3.5rem;">{{ loop.index }}</td>
+                                          <td class="font-monospace small header-value">{{ raw }}</td>
+                                        </tr>
+                                        {% endfor %}
+                                      </tbody>
+                                    </table>
+                                    {% endif %}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                        {% endif %}
+
+                        {% if geolocations %}
+                        <div class="mt-4 mb-4">
+                            <h4>Map</h4>
+                            <hr>
+                            <p>The email appears to originate from <strong>{{ geolocations[0].city or 'an unknown city' }}, {{ geolocations[0].country or 'an unknown country' }}</strong>.</p>
+                            {% if geolocations | length > 1 %}
+                            <p>The email went to {% for location in geolocations[1:] %}<strong>{{ location.city or 'an unknown city' }}, {{ location.country or 'an unknown country' }}</strong>{% if not loop.last %} ---> {% endif %}{% endfor %} before it landed in your mailbox.</p>
+                            {% endif %}
+
+                            {% if mapbox_token %}
+                            <div id="map" style="width: 100%; height: 400px;"></div>
+                            <script>
+                            (function () {
+                                var mapElement = document.getElementById('map');
+                                if (!mapElement || typeof mapboxgl === 'undefined') {
+                                    if (mapElement) {
+                                        mapElement.style.display = 'none';
+                                    }
+                                    return;
+                                }
+                                try {
+                                    mapboxgl.accessToken = {{ mapbox_token | tojson }};
+                                    var locations = {{ geolocations | tojson }};
+                                    var map = new mapboxgl.Map({
+                                        container: 'map',
+                                        style: 'mapbox://styles/mapbox/streets-v12',
+                                        projection: 'mercator',
+                                        renderWorldCopies: false,
+                                        maxBounds: [[-180, -85], [180, 85]],
+                                        center: [locations[0].longitude, locations[0].latitude],
+                                        zoom: 4
+                                    });
+                                    map.on('error', function () {});
+
+                                    var pinSvg = '<svg width="34" height="44" viewBox="0 0 34 44" xmlns="http://www.w3.org/2000/svg">'
+                                        + '<path d="M17 0C7.61 0 0 7.61 0 17c0 12.75 17 27 17 27s17-14.25 17-27C34 7.61 26.39 0 17 0z" fill="#1767CE"/>'
+                                        + '<rect x="8" y="11" width="18" height="13" rx="2" fill="#ffffff"/>'
+                                        + '<path d="M9.5 13.5 17 19l7.5-5.5" fill="none" stroke="#1767CE" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>'
+                                        + '</svg>';
+
+                                    var bounds = new mapboxgl.LngLatBounds();
+
+                                    var groups = {};
+                                    locations.forEach(function (location, index) {
+                                        var key = location.longitude.toFixed(3) + ',' + location.latitude.toFixed(3);
+                                        if (!groups[key]) {
+                                            groups[key] = [];
+                                        }
+                                        groups[key].push({ location: location, hop: index + 1 });
+                                    });
+
+                                    Object.keys(groups).forEach(function (key) {
+                                        var members = groups[key];
+                                        var coordinates = [members[0].location.longitude, members[0].location.latitude];
+                                        bounds.extend(coordinates);
+
+                                        var el = document.createElement('div');
+                                        el.className = 'map-pin';
+                                        el.innerHTML = pinSvg;
+
+                                        var badge = document.createElement('span');
+                                        badge.className = 'map-pin-number';
+                                        badge.textContent = members.map(function (member) { return member.hop; }).join(',');
+                                        el.appendChild(badge);
+
+                                        var popupContent = document.createElement('div');
+                                        var place = document.createElement('strong');
+                                        place.textContent = (members[0].location.city || 'Unknown city') + ', ' + (members[0].location.country || 'unknown country');
+                                        popupContent.appendChild(place);
+                                        if (members.length > 1) {
+                                            var note = document.createElement('div');
+                                            note.className = 'small text-secondary';
+                                            note.textContent = members.length + ' hops at this location';
+                                            popupContent.appendChild(note);
+                                        }
+                                        members.forEach(function (member) {
+                                            var line = document.createElement('div');
+                                            line.className = 'small';
+                                            var label = document.createElement('strong');
+                                            label.textContent = 'Hop ' + member.hop + ' of ' + locations.length + ': ';
+                                            var ip = document.createElement('span');
+                                            ip.className = 'font-monospace';
+                                            ip.textContent = member.location.ip_address;
+                                            line.appendChild(label);
+                                            line.appendChild(ip);
+                                            popupContent.appendChild(line);
+                                        });
+
+                                        new mapboxgl.Marker({ element: el, anchor: 'bottom' })
+                                            .setLngLat(coordinates)
+                                            .setPopup(new mapboxgl.Popup({ offset: 40 }).setDOMContent(popupContent))
+                                            .addTo(map);
+                                    });
+
+                                    if (locations.length > 1) {
+                                        map.fitBounds(bounds, { padding: 70, maxZoom: 8 });
+                                        map.on('load', function () {
+                                            map.addSource('email-route', {
+                                                type: 'geojson',
+                                                data: {
+                                                    type: 'Feature',
+                                                    properties: {},
+                                                    geometry: {
+                                                        type: 'LineString',
+                                                        coordinates: locations.map(function (location) {
+                                                            return [location.longitude, location.latitude];
+                                                        })
+                                                    }
+                                                }
+                                            });
+                                            map.addLayer({
+                                                id: 'email-route-line',
+                                                type: 'line',
+                                                source: 'email-route',
+                                                layout: { 'line-cap': 'round', 'line-join': 'round' },
+                                                paint: { 'line-color': '#1767CE', 'line-width': 2.5, 'line-dasharray': [2, 1.5] }
+                                            });
+                                        });
+                                    }
+                                } catch (mapError) {
+                                    mapElement.style.display = 'none';
+                                }
+                            })();
+                            </script>
+                            {% else %}
+                            <p class="text-secondary">The map display is unavailable.</p>
+                            {% endif %}
+                        </div>
+                        {% endif %}
+
+                        {% if results %}
+                        <div class="mt-4 mb-4">
+                            <h4>Attachments</h4>
+
+                            <div class="accordion text-start" id="attachmentsAccordion">
+                            {% for result in results %}
+                              {% if result.status == 'malicious' %}
+                                {% set badge_class, badge_text, header_bg = 'text-bg-danger', 'Infected file', '#FF9E8F' %}
+                              {% elif result.status == 'clean' %}
+                                {% set badge_class, badge_text, header_bg = 'text-bg-success', 'No detections', '#D1E7DD' %}
+                              {% elif result.status == 'unknown' %}
+                                {% set badge_class, badge_text, header_bg = 'text-bg-info', 'No results', '#FDD791' %}
+                              {% else %}
+                                {% set badge_class, badge_text, header_bg = 'text-bg-secondary', 'Not checked', '#E9ECEF' %}
+                              {% endif %}
+                              <div class="accordion-item">
+                                <h2 class="accordion-header">
+                                  <button class="accordion-button accordion-flush collapsed" style="background-color: {{ header_bg }};" type="button" data-bs-toggle="collapse" data-bs-target="#attachment-{{ loop.index0 }}" aria-expanded="false" aria-controls="attachment-{{ loop.index0 }}">
+                                    <span class="badge {{ badge_class }} m-2 text-uppercase">{{ badge_text }}</span>
+                                    <strong>{{ result.name }}</strong>
+                                  </button>
+                                </h2>
+                                <div id="attachment-{{ loop.index0 }}" class="accordion-collapse collapse" data-bs-parent="#attachmentsAccordion">
+                                  <div class="accordion-body">
+                                    <h4>{{ result.name }}</h4>
+                                    {% if result.status == 'malicious' %}
+                                    <div class="bg-danger text-white p-3">
+                                        <p>This attachment appears to be infected with malware. It was flagged by {{ result.malicious_count }}{% if result.total_engines %} of {{ result.total_engines }}{% endif %} security engine{{ 's' if result.malicious_count != 1 }}{% if result.yara_rule %} and detected as <strong>{{ result.yara_rule }}</strong>{% endif %}.</p>
+                                        {% if result.first_seen or result.last_seen %}
+                                        <p>{% if result.first_seen %}The malware was first observed <strong>{{ result.first_seen }}</strong>{% endif %}{% if result.first_seen and result.last_seen %} and last observed <strong>{{ result.last_seen }}</strong>{% elif result.last_seen %}The malware was last observed <strong>{{ result.last_seen }}</strong>{% endif %}.</p>
+                                        {% endif %}
+                                        <p>Do not open this attachment.</p>
+                                    </div>
+                                    {% elif result.status == 'clean' %}
+                                    <p>VirusTotal scanners found no detections for this attachment.</p>
+                                    <strong>NOTE: This does not guarantee that the file is safe. Stay cautious when opening attachments.</strong>
+                                    {% elif result.status == 'unknown' %}
+                                    <p>We found no signs that this file is malicious.</p>
+                                    <strong>NOTE: This does not mean the file is safe. This file is not known to VirusTotal, so stay cautious when opening it.</strong>
+                                    {% else %}
+                                    <p>This attachment could not be checked. Please try again later.</p>
+                                    <strong>If the problem persists, please contact support.</strong>
+                                    {% endif %}
+                                    {% if result.sha256 %}
+                                    <p class="mt-3 mb-0 text-secondary" style="word-break: break-all;">SHA256 hash: {{ result.sha256 }}</p>
+                                    {% endif %}
+                                  </div>
+                                </div>
+                              </div>
+                            {% endfor %}
+                            </div>
+                        </div>
+                        {% endif %}
+
+                        {% if url_results %}
+                        <div class="mt-4 mb-4">
+                            <h4>Links</h4>
+                            <table class="table table-hover table-responsive-sm" style="table-layout: fixed; word-wrap: break-word;">
+                                <thead class="table-dark">
+                                    <tr>
+                                        <th style="width: 70%;">URL</th>
+                                        <th style="width: 30%;">VirusTotal</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                {% for item in url_results %}
+                                    <tr>
+                                        <td style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                                            <a href="{{ item.url }}" target="_blank" rel="noopener noreferrer" title="{{ item.url }}">{{ item.destination or item.url }}</a>
+                                            {% if item.vendor %}
+                                            <br><span class="small text-secondary">Link rewritten by {{ item.vendor }}{% if item.destination %}; real destination is {{ item.destination }}{% endif %}</span>
+                                            {% endif %}
+                                        </td>
+                                        <td>
+                                            {% if item.status == 'malicious' %}
+                                            <span class="badge text-bg-danger text-uppercase">Malicious ({{ item.detections }})</span>
+                                            {% elif item.status == 'suspicious' %}
+                                            <span class="badge text-bg-warning text-uppercase">Suspicious ({{ item.detections }})</span>
+                                            {% elif item.status == 'clean' %}
+                                            <span class="badge text-bg-success text-uppercase">Clean</span>
+                                            {% else %}
+                                            <span class="badge text-bg-secondary text-uppercase">Unknown</span>
+                                            {% endif %}
+                                        </td>
+                                    </tr>
+                                {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                        {% endif %}
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <script>
+            document.getElementById('upload-form').addEventListener('submit', function (e) {
+
+                e.preventDefault();
+
+                var fileInput = document.getElementById('file-input');
+                var loadingDiv = document.getElementById('loading');
+                var uploadError = document.getElementById('upload-error');
+                var uploadButton = document.getElementById('upload-button');
+
+                if (!fileInput.files.length) {
+                    return;
+                }
+
+                uploadError.classList.add('d-none');
+                loadingDiv.classList.remove('d-none');
+                uploadButton.disabled = true;
+
+                var formData = new FormData();
+                formData.append('file', fileInput.files[0]);
+
+                fetch('/upload', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(function (response) {
+                    return response.text();
+                })
+                .then(function (html) {
+                    var newDoc = document.open('text/html', 'replace');
+                    newDoc.write(html);
+                    newDoc.close();
+                })
+                .catch(function () {
+                    loadingDiv.classList.add('d-none');
+                    uploadButton.disabled = false;
+                    uploadError.classList.remove('d-none');
+                });
+            });
+        </script>
+
+        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js" integrity="sha384-geWF76RCwLtnZ8qwWowPQNguL3RmwHVBC9FhGdlKrxdiJJigb/j/68SIy3Te4Bkz" crossorigin="anonymous"></script>
+
+    </body>
+
+</html>

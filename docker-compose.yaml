@@ -1,0 +1,10 @@
+services:
+  web:
+    build: .
+    restart: always
+    env_file:
+      - .env
+    ports:
+      - "80:80"
+    tmpfs:
+      - /tmp

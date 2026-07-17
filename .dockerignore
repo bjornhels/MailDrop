@@ -1,0 +1,12 @@
+.env
+.git
+.github
+.gitignore
+.dockerignore
+.claude
+.DS_Store
+__pycache__
+data
+*.mmdb
+uploads
+reports

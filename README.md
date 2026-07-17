@@ -23,7 +23,7 @@ Uploaded files are processed entirely in memory and are never stored.
 
 ## Running it
 
-**With Docker (recommended):**
+**With Docker Compose (recommended):**
 
 ```bash
 cp .env.example .env   # add your API keys
@@ -31,6 +31,23 @@ docker compose up
 ```
 
 Then open `http://localhost`.
+
+**With plain Docker:**
+
+```bash
+cp .env.example .env   # add your API keys
+docker build -t maildrop .
+docker run -d --name maildrop \
+  --env-file .env \
+  -e GEOIP_DB_PATH=/data/GeoLite2-City.mmdb \
+  -p 80:80 \
+  -v "$(pwd)/data:/data:ro" \
+  --tmpfs /tmp \
+  --restart always \
+  maildrop
+```
+
+The `.env` file is read from the directory you run the command in. To use the prebuilt image instead of building yourself, replace the `docker build` step and the final `maildrop` argument with `ghcr.io/bjornhels/maildrop:latest`.
 
 **Without Docker:**
 

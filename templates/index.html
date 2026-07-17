@@ -161,6 +161,20 @@
                         </div>
                         {% endif %}
 
+                        {% if remote_content and remote_content.trackers > 0 %}
+                        <div class="bg-warning p-3 mt-3 mb-3 rounded">
+                            <p class="fw-bold mb-2">TRACKING: This email contains {{ remote_content.trackers }} hidden tracking image{{ 's' if remote_content.trackers != 1 }}.</p>
+                            <p class="mb-0">Opening this email in a normal mail client would silently tell the sender that you read it, when you read it, and your IP address. The Remote content section below lists the hosts that would be contacted.</p>
+                        </div>
+                        {% endif %}
+
+                        {% if vt_rate_limited %}
+                        <div class="alert alert-info mt-3 mb-3">
+                            <strong>Some checks are incomplete.</strong>
+                            <p class="mb-0">The VirusTotal lookup limit was reached while analyzing this email, so items marked "Rate limited" have not been checked yet. Please wait a minute and upload the email again to complete the analysis.</p>
+                        </div>
+                        {% endif %}
+
                         <hr>
 
                         {% if headers %}
@@ -371,6 +385,17 @@
                         </div>
                         {% endif %}
 
+                        {% if body_preview %}
+                        <div class="mt-4 mb-4">
+                            <h4>Message preview</h4>
+                            <p class="text-secondary small">Text only. Formatting, images, remote content and clickable links are removed, so this preview is safe to read.</p>
+                            <pre class="border rounded p-3 bg-light text-dark" style="white-space: pre-wrap; word-break: break-word; max-height: 400px; overflow-y: auto;">{{ body_preview }}</pre>
+                            {% if preview_truncated %}
+                            <p class="text-secondary small">The preview was shortened; the full message text is longer.</p>
+                            {% endif %}
+                        </div>
+                        {% endif %}
+
                         {% if results %}
                         <div class="mt-4 mb-4">
                             <h4>Attachments</h4>
@@ -383,6 +408,8 @@
                                 {% set badge_class, badge_text, header_bg = 'text-bg-success', 'No detections', '#D1E7DD' %}
                               {% elif result.status == 'unknown' %}
                                 {% set badge_class, badge_text, header_bg = 'text-bg-info', 'No results', '#FDD791' %}
+                              {% elif result.status == 'rate_limited' %}
+                                {% set badge_class, badge_text, header_bg = 'text-bg-warning', 'Rate limited', '#FFF3CD' %}
                               {% else %}
                                 {% set badge_class, badge_text, header_bg = 'text-bg-secondary', 'Not checked', '#E9ECEF' %}
                               {% endif %}
@@ -410,6 +437,9 @@
                                     {% elif result.status == 'unknown' %}
                                     <p>We found no signs that this file is malicious.</p>
                                     <strong>NOTE: This does not mean the file is safe. This file is not known to VirusTotal, so stay cautious when opening it.</strong>
+                                    {% elif result.status == 'rate_limited' %}
+                                    <p>We could not check this attachment because our VirusTotal lookup limit was reached.</p>
+                                    <strong>Please wait a minute and upload the email again to complete this check. Until then, treat the attachment with caution.</strong>
                                     {% else %}
                                     <p>This attachment could not be checked. Please try again later.</p>
                                     <strong>If the problem persists, please contact support.</strong>
@@ -443,6 +473,9 @@
                                             {% if item.vendor %}
                                             <br><span class="small text-secondary">Link rewritten by {{ item.vendor }}{% if item.destination %}; real destination is {{ item.destination }}{% endif %}</span>
                                             {% endif %}
+                                            {% for flag in item.flags %}
+                                            <br><span class="badge text-bg-warning">{{ flag.label }}</span> <span class="small text-secondary">{{ flag.detail }}</span>
+                                            {% endfor %}
                                         </td>
                                         <td>
                                             {% if item.status == 'malicious' %}
@@ -451,6 +484,8 @@
                                             <span class="badge text-bg-warning text-uppercase">Suspicious ({{ item.detections }})</span>
                                             {% elif item.status == 'clean' %}
                                             <span class="badge text-bg-success text-uppercase">Clean</span>
+                                            {% elif item.status == 'rate_limited' %}
+                                            <span class="badge text-bg-warning text-uppercase">Rate limited</span>
                                             {% else %}
                                             <span class="badge text-bg-secondary text-uppercase">Unknown</span>
                                             {% endif %}
@@ -459,6 +494,40 @@
                                 {% endfor %}
                                 </tbody>
                             </table>
+                        </div>
+                        {% endif %}
+
+                        {% if remote_content and remote_content.total > 0 %}
+                        <div class="mt-4 mb-4">
+                            <h4>Remote content</h4>
+                            <p>Opening this email in a mail client would load {{ remote_content.total }} remote resource{{ 's' if remote_content.total != 1 }} from {{ remote_content.host_count }} host{{ 's' if remote_content.host_count != 1 }}. Each request reveals your IP address and reading time to that host.</p>
+                            <table class="table table-hover table-responsive-sm" style="table-layout: fixed; word-wrap: break-word;">
+                                <thead class="table-dark">
+                                    <tr>
+                                        <th style="width: 55%;">Resource</th>
+                                        <th style="width: 20%;">Loaded by</th>
+                                        <th style="width: 25%;">Type</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                {% for resource in remote_content.resources %}
+                                    <tr>
+                                        <td style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="{{ resource.url }}">{{ resource.host or resource.url }}</td>
+                                        <td>{{ resource.tag }}</td>
+                                        <td>
+                                            {% if resource.tracker %}
+                                            <span class="badge text-bg-danger text-uppercase">Tracking pixel</span>
+                                            {% else %}
+                                            <span class="badge text-bg-secondary text-uppercase">Remote resource</span>
+                                            {% endif %}
+                                        </td>
+                                    </tr>
+                                {% endfor %}
+                                </tbody>
+                            </table>
+                            {% if remote_content.total > remote_content.resources | length %}
+                            <p class="text-secondary small">Showing the first {{ remote_content.resources | length }} of {{ remote_content.total }} resources.</p>
+                            {% endif %}
                         </div>
                         {% endif %}
                     </div>

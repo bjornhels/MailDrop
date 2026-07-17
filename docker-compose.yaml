@@ -4,7 +4,11 @@ services:
     restart: always
     env_file:
       - .env
+    environment:
+      - GEOIP_DB_PATH=/data/GeoLite2-City.mmdb
     ports:
       - "80:80"
+    volumes:
+      - ./data:/data:ro
     tmpfs:
       - /tmp

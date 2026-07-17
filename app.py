@@ -7,6 +7,8 @@ import time
 import email
 import requests
 import extract_msg
+import geoip2.database
+import geoip2.errors
 from email import policy
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
@@ -23,12 +25,14 @@ app = Flask(__name__)
 API_KEY = os.environ.get('API_KEY')
 MAPBOX_TOKEN = os.environ.get('MAPBOX_TOKEN')
 BRAND_NAME = (os.environ.get('BRAND_NAME') or '').strip()
+GEOIP_DB_PATH = os.environ.get('GEOIP_DB_PATH', 'GeoLite2-City.mmdb')
 
 app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024
 
 ALLOWED_EXTENSIONS = {'eml', 'msg'}
 REQUEST_TIMEOUT = 10
 MAX_URL_LOOKUPS = 10
+PREVIEW_MAX_CHARS = 20000
 
 IPV4_REGEX = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
 IPV6_CANDIDATE_REGEX = re.compile(r'\b[0-9A-Fa-f]{1,4}:[0-9A-Fa-f:]+\b')
@@ -43,6 +47,8 @@ SUBMITTING_HOST_REGEX = re.compile(r'from\s+(.*?)\s+by\s')
 RECEIVING_HOST_REGEX = re.compile(r'by\s+(.*?)\s+with\s')
 HOP_TIME_REGEX = re.compile(r';\s*(.*)$')
 HOP_TYPE_REGEX = re.compile(r'with\s+(.*?)(?=\s+id\s|\s+for\s|;|$)')
+CSS_URL_REGEX = re.compile(r'url\(\s*["\']?(https?://[^)"\']+)', re.IGNORECASE)
+TEXT_DOMAIN_REGEX = re.compile(r'(?:https?://)?(?:www\.)?([a-z0-9-]+(?:\.[a-z0-9-]+)+)')
 
 HEADER_FIELDS = [
     'From', 'To', 'Subject', 'Date', 'Return-Path', 'Reply-To', 'Content-Type',
@@ -54,6 +60,17 @@ TWO_LEVEL_SUFFIXES = {
     'co.uk', 'org.uk', 'ac.uk', 'gov.uk', 'com.au', 'net.au', 'org.au',
     'co.nz', 'co.jp', 'com.br', 'com.mx', 'co.in', 'com.cn', 'com.sg',
     'com.hk', 'co.za', 'com.tr', 'com.ar',
+}
+
+COMMON_TLDS = {
+    'com', 'net', 'org', 'no', 'se', 'dk', 'de', 'uk', 'io', 'co', 'gov',
+    'edu', 'info', 'eu', 'app', 'dev', 'me', 'us', 'ai', 'fi', 'nl', 'fr',
+    'es', 'it',
+}
+
+BLOCK_TAGS = {
+    'p', 'br', 'div', 'tr', 'li', 'table', 'ul', 'ol', 'h1', 'h2', 'h3',
+    'h4', 'h5', 'h6', 'blockquote', 'section', 'article', 'header', 'footer',
 }
 
 GATEWAY_SIGNATURES = [
@@ -100,6 +117,16 @@ DKIM_FALLBACK = (
 )
 
 
+def load_geoip_reader():
+    try:
+        return geoip2.database.Reader(GEOIP_DB_PATH)
+    except (OSError, ValueError):
+        return None
+
+
+geoip_reader = load_geoip_reader()
+
+
 def render_index(**context):
     return render_template('index.html', brand=BRAND_NAME, mapbox_token=MAPBOX_TOKEN, **context)
 
@@ -144,9 +171,16 @@ def upload_file():
         return render_index(error="We are not able to read this email. Please try again with a valid .eml or .msg file.")
 
     headers, geolocations, hops, received_headers, arc_results = extract_headers(message)
-    url_results = analyze_urls(text_parts)
+    from_domain = extract_domain(headers.get('From'))
+    url_results = analyze_urls(text_parts, from_domain)
+    remote_content = analyze_remote_content(text_parts)
+    body_preview, preview_truncated = build_body_preview(text_parts)
     results = [analyze_attachment(name, data) for name, data in attachments]
     is_infected = any(result['status'] == 'malicious' for result in results)
+    vt_rate_limited = (
+        any(result['status'] == 'rate_limited' for result in results)
+        or any(item['status'] == 'rate_limited' for item in url_results)
+    )
 
     gateways = detect_gateways(received_headers, url_results)
     phishing_evidence, phishing_caveats = build_phishing_evidence(headers, url_results, arc_results, gateways)
@@ -163,6 +197,10 @@ def upload_file():
         hops=hops,
         received_headers=received_headers,
         url_results=url_results,
+        remote_content=remote_content,
+        body_preview=body_preview,
+        preview_truncated=preview_truncated,
+        vt_rate_limited=vt_rate_limited,
     )
 
 
@@ -350,6 +388,14 @@ def build_phishing_evidence(headers, url_results, arc_results, gateways):
             'explanation': 'One or more links in this email are flagged as malicious by security vendors on VirusTotal. Phishing emails use such links to steal passwords or install malware. Do not click any links in this email.',
         })
 
+    lookalike_details = [flag['detail'] for item in url_results for flag in item['flags'] if flag['type'] == 'lookalike']
+    if lookalike_details:
+        triggers.append({
+            'title': "Contains a link imitating the sender's domain",
+            'observed': lookalike_details[0],
+            'explanation': 'A link in this email points to a domain that looks almost identical to the sender domain. Attackers register such lookalike domains to make fake pages appear legitimate. Do not click links in this email.',
+        })
+
     from_domain = extract_domain(headers.get('From'))
     return_path_domain = extract_domain(headers.get('Return-Path'))
     reply_to_domain = extract_domain(headers.get('Reply-To'))
@@ -366,6 +412,22 @@ def build_phishing_evidence(headers, url_results, arc_results, gateways):
             'title': 'Replies go to a different address than the sender',
             'observed': f'From domain is "{from_domain}" but replies go to "{reply_to_domain}"',
             'explanation': 'Answering this email would send your reply to a different domain than the visible sender - a common trick to redirect responses to an attacker.',
+        })
+
+    mismatch_details = [flag['detail'] for item in url_results for flag in item['flags'] if flag['type'] == 'mismatch']
+    if mismatch_details:
+        supporting.append({
+            'title': 'Link text does not match its destination',
+            'observed': '; '.join(mismatch_details[:2]),
+            'explanation': 'The visible text of a link shows a different address than where the link really goes. Newsletters use click-tracking links that look like this, but it is also a common trick to make a malicious link look trustworthy.',
+        })
+
+    punycode_details = [flag['detail'] for item in url_results for flag in item['flags'] if flag['type'] == 'punycode']
+    if punycode_details:
+        supporting.append({
+            'title': 'Contains internationalized (punycode) link domains',
+            'observed': punycode_details[0],
+            'explanation': 'Internationalized domains are legitimate, but attackers also use them to build addresses that look nearly identical to well-known domains.',
         })
 
     suspicious_count = sum(1 for item in url_results if item['status'] == 'suspicious')
@@ -452,6 +514,8 @@ def parse_received_time(header_text):
 
 
 def get_geolocations(ip_addresses):
+    if geoip_reader is None:
+        return []
     geolocations = []
     seen = set()
     for ip_address in ip_addresses:
@@ -466,25 +530,21 @@ def get_geolocations(ip_addresses):
             continue
 
         try:
-            response = requests.get(f'http://ip-api.com/json/{ip_address}', timeout=REQUEST_TIMEOUT)
-            data = response.json()
-        except (requests.RequestException, ValueError):
+            record = geoip_reader.city(ip_address)
+        except (geoip2.errors.AddressNotFoundError, ValueError):
             continue
 
-        if not isinstance(data, dict) or data.get('status') != 'success':
-            continue
-        try:
-            latitude = float(data['lat'])
-            longitude = float(data['lon'])
-        except (KeyError, TypeError, ValueError):
+        latitude = record.location.latitude
+        longitude = record.location.longitude
+        if latitude is None or longitude is None:
             continue
 
         geolocations.append({
             'ip_address': ip_address,
-            'latitude': latitude,
-            'longitude': longitude,
-            'city': data.get('city'),
-            'country': data.get('country'),
+            'latitude': float(latitude),
+            'longitude': float(longitude),
+            'city': record.city.name,
+            'country': record.country.name,
         })
     return geolocations
 
@@ -506,6 +566,9 @@ def analyze_attachment(name, data):
     result['sha256'] = hashlib.sha256(data).hexdigest()
     report = virustotal_request(f"https://www.virustotal.com/api/v3/files/{result['sha256']}")
     if report is None:
+        return result
+    if report.get('error') == 'rate_limited':
+        result['status'] = 'rate_limited'
         return result
     if 'error' in report:
         result['status'] = 'unknown'
@@ -567,22 +630,97 @@ def extract_host(url):
     return match.group(1).lower() if match else None
 
 
-def analyze_urls(text_parts):
+def levenshtein(a, b):
+    if abs(len(a) - len(b)) > 1:
+        return 2
+    previous = list(range(len(b) + 1))
+    for i, char_a in enumerate(a, start=1):
+        current = [i]
+        for j, char_b in enumerate(b, start=1):
+            current.append(min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (char_a != char_b)))
+        previous = current
+    return previous[-1]
+
+
+def decode_punycode(host):
+    try:
+        return host.encode('ascii').decode('idna')
+    except (UnicodeError, ValueError):
+        return None
+
+
+def is_lookalike_domain(link_host, from_domain):
+    link_registrable = registrable_domain(link_host)
+    from_registrable = registrable_domain(from_domain)
+    if link_registrable == from_registrable:
+        return False
+    link_label = link_registrable.split('.')[0]
+    from_label = from_registrable.split('.')[0]
+    if link_label == from_label:
+        return False
+    return len(from_label) >= 5 and levenshtein(link_label, from_label) == 1
+
+
+def link_flags(item, from_domain):
+    flags = []
+    effective_host = item['destination'] or extract_host(item['url'])
+    if not effective_host:
+        return flags
+
+    text = (item.get('text') or '').lower().strip()
+    if text:
+        text_match = TEXT_DOMAIN_REGEX.search(text)
+        if text_match:
+            text_domain = text_match.group(1)
+            tld = text_domain.rsplit('.', 1)[-1]
+            looks_like_address = '://' in text or 'www.' in text or tld in COMMON_TLDS
+            if looks_like_address and registrable_domain(text_domain) != registrable_domain(effective_host):
+                flags.append({
+                    'type': 'mismatch',
+                    'label': 'Link text mismatch',
+                    'detail': f'The link text shows "{text_domain}" but the link goes to "{effective_host}"',
+                })
+
+    if 'xn--' in effective_host:
+        decoded = decode_punycode(effective_host)
+        detail = f'"{effective_host}"'
+        if decoded and decoded != effective_host:
+            detail += f' displays as "{decoded}"'
+        flags.append({
+            'type': 'punycode',
+            'label': 'Punycode domain',
+            'detail': f'The destination {detail} uses internationalized characters that can imitate other domains',
+        })
+
+    if from_domain and is_lookalike_domain(effective_host, from_domain):
+        flags.append({
+            'type': 'lookalike',
+            'label': 'Lookalike domain',
+            'detail': f'The link domain "{registrable_domain(effective_host)}" closely resembles the sender domain "{registrable_domain(from_domain)}"',
+        })
+
+    return flags
+
+
+def analyze_urls(text_parts, from_domain):
     items = []
     seen = set()
-    for url in extract_urls(text_parts):
-        vendor, inner_url, destination = unwrap_url(url)
+    for link in extract_links(text_parts):
+        vendor, inner_url, destination = unwrap_url(link['url'])
         key = inner_url.replace('&amp;', '&')
         if key in seen:
             continue
         seen.add(key)
-        items.append({
-            'url': url,
+        item = {
+            'url': link['url'],
+            'text': link['text'],
             'vendor': vendor,
             'destination': destination,
             'status': 'unknown',
             'detections': 0,
-        })
+        }
+        item['flags'] = link_flags(item, from_domain)
+        items.append(item)
 
     for position, item in enumerate(items):
         if position >= MAX_URL_LOOKUPS:
@@ -593,6 +731,10 @@ def analyze_urls(text_parts):
         else:
             report = lookup_url_virustotal(item['url'])
             malicious_threshold = 1
+
+        if isinstance(report, dict) and report.get('error') == 'rate_limited':
+            item['status'] = 'rate_limited'
+            continue
 
         stats = dig(report, 'data', 'attributes', 'last_analysis_stats') or {}
         malicious = stats.get('malicious') or 0
@@ -606,38 +748,189 @@ def analyze_urls(text_parts):
     return items
 
 
-class HrefExtractor(HTMLParser):
+class LinkExtractor(HTMLParser):
     def __init__(self):
         super().__init__()
-        self.urls = []
+        self.links = []
+        self._current = None
 
     def handle_starttag(self, tag, attrs):
         if tag == 'a':
             for attribute, value in attrs:
                 if attribute == 'href' and value:
-                    self.urls.append(value)
+                    self._current = {'href': value, 'text': []}
+                    break
+
+    def handle_endtag(self, tag):
+        if tag == 'a' and self._current is not None:
+            self.links.append({'href': self._current['href'], 'text': ''.join(self._current['text']).strip()})
+            self._current = None
+
+    def handle_data(self, data):
+        if self._current is not None:
+            self._current['text'].append(data)
 
 
-def extract_urls(text_parts):
+class RemoteContentExtractor(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.resources = []
+        self._in_style = False
+
+    def handle_starttag(self, tag, attrs):
+        attrs_dict = {}
+        for name, value in attrs:
+            if name not in attrs_dict:
+                attrs_dict[name] = value or ''
+        if tag == 'style':
+            self._in_style = True
+        for attribute in ('src', 'href', 'poster', 'background', 'data'):
+            value = attrs_dict.get(attribute) or ''
+            if value.lower().startswith(('http://', 'https://')):
+                if tag == 'a' and attribute == 'href':
+                    continue
+                self.resources.append({'tag': tag, 'url': value, 'attrs': attrs_dict})
+        for match in CSS_URL_REGEX.finditer(attrs_dict.get('style') or ''):
+            self.resources.append({'tag': tag, 'url': match.group(1), 'attrs': attrs_dict})
+
+    def handle_endtag(self, tag):
+        if tag == 'style':
+            self._in_style = False
+
+    def handle_data(self, data):
+        if self._in_style:
+            for match in CSS_URL_REGEX.finditer(data):
+                self.resources.append({'tag': 'style', 'url': match.group(1), 'attrs': {}})
+
+
+class TextExtractor(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.chunks = []
+        self._skip = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ('script', 'style', 'head', 'title'):
+            self._skip += 1
+        elif tag in BLOCK_TAGS:
+            self.chunks.append('\n')
+
+    def handle_endtag(self, tag):
+        if tag in ('script', 'style', 'head', 'title') and self._skip > 0:
+            self._skip -= 1
+
+    def handle_data(self, data):
+        if self._skip == 0:
+            self.chunks.append(data)
+
+
+def extract_links(text_parts):
     seen = set()
-    urls = []
+    links = []
     for content_type, text in text_parts:
         if content_type == 'text/html':
-            extractor = HrefExtractor()
+            extractor = LinkExtractor()
             try:
                 extractor.feed(text)
             except Exception:
                 continue
-            found = [url for url in extractor.urls if url.startswith('http')]
+            found = [(link['href'], link['text']) for link in extractor.links if link['href'].startswith('http')]
         else:
-            found = URL_REGEX.findall(text)
+            found = [(url, None) for url in URL_REGEX.findall(text)]
 
-        for url in found:
+        for url, text_value in found:
             url = url.rstrip('.,;)')
             if url and url not in seen:
                 seen.add(url)
-                urls.append(url)
-    return urls
+                links.append({'url': url, 'text': text_value})
+    return links
+
+
+def parse_dimension(value):
+    if value is None:
+        return None
+    value = str(value).strip().lower().removesuffix('px')
+    try:
+        return int(float(value))
+    except ValueError:
+        return None
+
+
+def is_tracking_pixel(resource):
+    if resource['tag'] != 'img':
+        return False
+    attrs = resource['attrs']
+    width = parse_dimension(attrs.get('width'))
+    height = parse_dimension(attrs.get('height'))
+    if width is not None and height is not None and width <= 2 and height <= 2:
+        return True
+    style = (attrs.get('style') or '').lower().replace(' ', '')
+    if 'display:none' in style or 'visibility:hidden' in style:
+        return True
+    if re.search(r'(width|height):[0-2]px', style):
+        return True
+    return False
+
+
+def analyze_remote_content(text_parts):
+    resources = []
+    seen = set()
+    for content_type, text in text_parts:
+        if content_type != 'text/html':
+            continue
+        extractor = RemoteContentExtractor()
+        try:
+            extractor.feed(text)
+        except Exception:
+            continue
+        for resource in extractor.resources:
+            url = resource['url'].rstrip('.,;)')
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            resources.append({
+                'url': url,
+                'host': extract_host(url),
+                'tag': resource['tag'],
+                'tracker': is_tracking_pixel(resource),
+            })
+
+    resources.sort(key=lambda resource: not resource['tracker'])
+    hosts = {resource['host'] for resource in resources if resource['host']}
+    return {
+        'resources': resources[:100],
+        'total': len(resources),
+        'trackers': sum(1 for resource in resources if resource['tracker']),
+        'host_count': len(hosts),
+    }
+
+
+def build_body_preview(text_parts):
+    text = None
+    for content_type, part_text in text_parts:
+        if content_type == 'text/plain' and part_text.strip():
+            text = part_text
+            break
+    if text is None:
+        for content_type, part_text in text_parts:
+            if content_type != 'text/html':
+                continue
+            extractor = TextExtractor()
+            try:
+                extractor.feed(part_text)
+            except Exception:
+                continue
+            candidate = ''.join(extractor.chunks)
+            if candidate.strip():
+                text = candidate
+                break
+    if text is None:
+        return None, False
+
+    text = re.sub(r'[ \t]+\n', '\n', text)
+    text = re.sub(r'\n{3,}', '\n\n', text).strip()
+    truncated = len(text) > PREVIEW_MAX_CHARS
+    return text[:PREVIEW_MAX_CHARS], truncated
 
 
 def lookup_url_virustotal(url):
@@ -657,6 +950,8 @@ def virustotal_request(url):
     except requests.RequestException:
         return None
 
+    if response.status_code == 429:
+        return {'error': 'rate_limited'}
     if response.status_code == 404:
         return {'error': 'not_found'}
     if response.status_code != 200:

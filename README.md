@@ -6,11 +6,14 @@ A web tool for analyzing suspicious emails for signs of phishing or malware.
 
 Upload a `.eml` or `.msg` email file and MailDrop will:
 
-- Show email header details (sender, route, SPF/DKIM authentication)
-- Plot the email's geographic route on a map
+- Show email header details (sender, route, SPF/DKIM/DMARC authentication)
+- Plot the email's geographic route on a map, using an offline GeoLite2 database so no IP addresses ever leave your server
 - Scan attachments against [VirusTotal](https://www.virustotal.com) and flag infected files
-- Extract all links from the email body and check them against VirusTotal
-- Warn if the email looks like a phishing attempt
+- Extract all links from the email body, unwrap security-gateway rewrites, and check them against VirusTotal
+- Detect hidden tracking pixels and list all remote content the email would load
+- Flag links whose visible text does not match their destination, punycode domains, and lookalikes of the sender domain
+- Show a safe text-only preview of the message body
+- Warn if the email looks like a phishing attempt, with the evidence explained
 
 Uploaded files are processed entirely in memory and are never stored.
 
@@ -45,6 +48,16 @@ BRAND_NAME=Your Organization
 - `API_KEY` — VirusTotal API key. Required for attachment and link scanning; without it, attachments show as "Not checked".
 - `MAPBOX_TOKEN` — Mapbox access token. Optional; the map is hidden when unset.
 - `BRAND_NAME` — Optional organization name shown in the page title and header next to "MailDrop".
+- `GEOIP_DB_PATH` — Path to the GeoLite2 City database. Optional; geolocation and the map are disabled when the file is missing. With Docker, place the file in `./data/` and the bundled compose file mounts it automatically.
+
+### Getting the GeoLite2 database
+
+Geolocation runs fully offline against a local MaxMind GeoLite2 database, so the IP addresses found in analyzed emails never leave your server.
+
+1. Create a free MaxMind account at <https://www.maxmind.com/en/geolite2/signup>.
+2. Sign in and go to **Download Files** under GeoIP, then download the **GeoLite2 City** database in `.mmdb` format.
+3. Place the file at `./data/GeoLite2-City.mmdb` next to `docker-compose.yaml` (or set `GEOIP_DB_PATH` to wherever you keep it when running without Docker).
+4. Restart the app. MaxMind updates the database twice a week, so re-download it now and then (or automate it with their `geoipupdate` tool).
 
 ### Getting a VirusTotal API key
 

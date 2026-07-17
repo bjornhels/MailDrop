@@ -1,5 +1,9 @@
 # MailDrop
 
+[![Release](https://img.shields.io/github/v/release/bjornhels/MailDrop)](https://github.com/bjornhels/MailDrop/releases)
+[![Build and Publish](https://github.com/bjornhels/MailDrop/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/bjornhels/MailDrop/actions/workflows/docker-publish.yml)
+[![License](https://img.shields.io/github/license/bjornhels/MailDrop)](LICENSE)
+
 A web tool for analyzing suspicious emails for signs of phishing or malware.
 
 ## What it does

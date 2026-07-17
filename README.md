@@ -13,6 +13,7 @@ Upload a `.eml` or `.msg` email file and MailDrop will:
 - Show email header details (sender, route, SPF/DKIM/DMARC authentication)
 - Plot the email's geographic route on a map, using an offline GeoLite2 database so no IP addresses ever leave your server
 - Scan attachments against [VirusTotal](https://www.virustotal.com) and flag infected files
+- Statically inspect each attachment for malware signs without ever running it: content/extension mismatches, dangerous file types, Office macros and remote templates, risky PDF actions, dangerous archive contents, and HTML smuggling
 - Extract all links from the email body, unwrap security-gateway rewrites, and check them against VirusTotal
 - Detect hidden tracking pixels and list all remote content the email would load
 - Flag links whose visible text does not match their destination, punycode domains, and lookalikes of the sender domain
@@ -70,6 +71,26 @@ BRAND_NAME=Your Organization
 - `MAPBOX_TOKEN` — Mapbox access token. Optional; the map is hidden when unset.
 - `BRAND_NAME` — Optional organization name shown in the page title and header next to "MailDrop".
 - `GEOIP_DB_PATH` — Path to the GeoLite2 City database. Optional; geolocation and the map are disabled when the file is missing. With Docker, place the file in `./data/` and the bundled compose file mounts it automatically.
+
+## Extending the attachment checks
+
+Static attachment analysis lives in `static_analysis.py`. Each check is a function that takes a `FileContext` (with the raw bytes, the filename, the parsed extension, and the detected file type) and returns a list of findings. Adding a new check is one function:
+
+```python
+@register
+def inspect_my_rule(ctx):
+    if not_relevant(ctx):
+        return []
+    return [finding(
+        'medium',                 # high | medium | low | info
+        'my-category',
+        'Short title shown to the user',
+        'the exact thing observed',
+        'A plain-language explanation of why this matters.',
+    )]
+```
+
+The `@register` decorator adds it to the pipeline automatically; findings are deduplicated, sorted by severity, and rendered under the attachment. No check ever executes the file - they only parse and inspect its bytes.
 
 ### Getting the GeoLite2 database
 

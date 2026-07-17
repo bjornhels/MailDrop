@@ -9,6 +9,7 @@ import requests
 import extract_msg
 import geoip2.database
 import geoip2.errors
+import static_analysis
 from email import policy
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
@@ -177,6 +178,7 @@ def upload_file():
     body_preview, preview_truncated = build_body_preview(text_parts)
     results = [analyze_attachment(name, data) for name, data in attachments]
     is_infected = any(result['status'] == 'malicious' for result in results)
+    static_alert = any(result['static_risk'] == 'high' for result in results)
     vt_rate_limited = (
         any(result['status'] == 'rate_limited' for result in results)
         or any(item['status'] == 'rate_limited' for item in url_results)
@@ -194,6 +196,7 @@ def upload_file():
         phishing_evidence=phishing_evidence,
         phishing_caveats=phishing_caveats,
         is_infected=is_infected,
+        static_alert=static_alert,
         hops=hops,
         received_headers=received_headers,
         url_results=url_results,
@@ -559,9 +562,17 @@ def analyze_attachment(name, data):
         'yara_rule': None,
         'first_seen': None,
         'last_seen': None,
+        'static_findings': [],
+        'static_risk': None,
+        'type_label': None,
     }
     if not isinstance(data, bytes) or not data:
         return result
+
+    static = static_analysis.analyze_file(name, data)
+    result['static_findings'] = static['findings']
+    result['static_risk'] = static['risk']
+    result['type_label'] = static['type_label']
 
     result['sha256'] = hashlib.sha256(data).hexdigest()
     report = virustotal_request(f"https://www.virustotal.com/api/v3/files/{result['sha256']}")

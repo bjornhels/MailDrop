@@ -161,6 +161,13 @@
                         </div>
                         {% endif %}
 
+                        {% if static_alert %}
+                        <div class="bg-warning p-3 mt-3 mb-3 rounded">
+                            <p class="fw-bold mb-2">SUSPICIOUS ATTACHMENT: One or more attachments show structural signs commonly used by malware.</p>
+                            <p class="mb-0">These checks inspect each file's structure without opening it. They are warnings rather than proof, but treat the flagged attachments with caution. The details are listed under each attachment below.</p>
+                        </div>
+                        {% endif %}
+
                         {% if remote_content and remote_content.trackers > 0 %}
                         <div class="bg-warning p-3 mt-3 mb-3 rounded">
                             <p class="fw-bold mb-2">TRACKING: This email contains {{ remote_content.trackers }} hidden tracking image{{ 's' if remote_content.trackers != 1 }}.</p>
@@ -417,6 +424,7 @@
                                 <h2 class="accordion-header">
                                   <button class="accordion-button accordion-flush collapsed" style="background-color: {{ header_bg }};" type="button" data-bs-toggle="collapse" data-bs-target="#attachment-{{ loop.index0 }}" aria-expanded="false" aria-controls="attachment-{{ loop.index0 }}">
                                     <span class="badge {{ badge_class }} m-2 text-uppercase">{{ badge_text }}</span>
+                                    {% if result.static_risk in ('high', 'medium') %}<span class="badge text-bg-warning m-2 text-uppercase">Suspicious file</span>{% endif %}
                                     <strong>{{ result.name }}</strong>
                                   </button>
                                 </h2>
@@ -443,6 +451,27 @@
                                     {% else %}
                                     <p>This attachment could not be checked. Please try again later.</p>
                                     <strong>If the problem persists, please contact support.</strong>
+                                    {% endif %}
+                                    {% if result.static_findings %}
+                                    <div class="mt-3">
+                                        <p class="mb-1"><strong>File inspection</strong>{% if result.type_label %} - detected type: {{ result.type_label }}{% endif %}</p>
+                                        <ul class="mb-0">
+                                        {% for f in result.static_findings %}
+                                            {% if f.severity == 'high' %}{% set sev_class = 'text-bg-danger' %}
+                                            {% elif f.severity == 'medium' %}{% set sev_class = 'text-bg-warning' %}
+                                            {% elif f.severity == 'low' %}{% set sev_class = 'text-bg-secondary' %}
+                                            {% else %}{% set sev_class = 'text-bg-light' %}{% endif %}
+                                            <li class="mb-2">
+                                                <span class="badge {{ sev_class }} text-uppercase">{{ f.severity }}</span>
+                                                <strong>{{ f.title }}</strong><br>
+                                                <span class="font-monospace small">Observed: {{ f.observed }}</span><br>
+                                                {{ f.explanation }}
+                                            </li>
+                                        {% endfor %}
+                                        </ul>
+                                    </div>
+                                    {% elif result.type_label %}
+                                    <p class="mt-3 mb-0 text-secondary">Detected type: {{ result.type_label }}. No structural warnings.</p>
                                     {% endif %}
                                     {% if result.sha256 %}
                                     <p class="mt-3 mb-0 text-secondary" style="word-break: break-all;">SHA256 hash: {{ result.sha256 }}</p>
